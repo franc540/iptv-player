@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reproductor IPTV - IPTV-Org</title>
+    <!-- Tailwind CSS para el diseño -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- HLS.js para reproducir streams de video -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body class="bg-gray-900 text-white h-screen flex flex-col overflow-hidden">
+
+    <!-- Barra Superior -->
+    <header class="bg-gray-800 p-4 shadow-md flex justify-between items-center border-b border-gray-700">
+        <div class="flex items-center gap-3">
+            <h1 class="text-xl font-bold flex items-center gap-2">📺 IPTV Reproductor</h1>
+            <button id="btn-back-home" onclick="loadMainPlaylist()" class="hidden bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1">
+                ⬅️ Volver a Categorías
+            </button>
+        </div>
+        <div>
+            <label for="m3u-file" class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg cursor-pointer font-medium transition shadow text-xs">
+                Cargar archivo local
+            </label>
+            <input type="file" id="m3u-file" accept=".m3u, .m3u8" class="hidden">
+        </div>
+    </header>
+
+    <!-- Contenedor Principal -->
+    <div class="flex flex-1 overflow-hidden">
+        
+        <!-- Sidebar: Lista de Canales / Categorías -->
+        <aside class="w-1/3 bg-gray-800 border-r border-gray-700 flex flex-col">
+            <div class="p-3 border-b border-gray-700 flex gap-2">
+                <input type="text" id="search-channel" placeholder="Buscar..." class="w-full bg-gray-700 px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
+                <button id="btn-clear-search" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-xs font-semibold transition" title="Limpiar filtro">✖️</button>
+            </div>
+            <div id="channel-list" class="flex-1 overflow-y-auto divide-y divide-gray-700/50">
+                <div class="p-6 text-center text-blue-400 text-sm animate-pulse">Cargando lista principal...</div>
+            </div>
+        </aside>
+
+        <!-- Sección del Reproductor de Video -->
+        <main class="flex-1 bg-black flex flex-col items-center justify-center relative">
+            <video id="video-player" controls autoplay class="w-full h-full max-h-screen object-contain"></video>
+            <div id="player-placeholder" class="absolute text-gray-500 text-center pointer-events-none">
+                <p class="text-lg font-medium">Usa tu control remoto o haz clic en un canal</p>
+            </div>
+        </main>
+    </div>
+
+    <!-- Script de Lógica -->
+    <script>
+        const MAIN_PLAYLIST_URL = 'https://iptv-org.github.io/iptv/index.m3u';
+        const DEFAULT_FILTER = 'espn';
+        
+        let items = [];
+        let filteredItems = [];
+        let currentIndex = 0;
+        let isSubList = false;
+        let currentPlayingUrl = null; // Para saber qué canal está sonando
+        
+        const video = document.getElementById('video-player');
+        const channelListEl = document.getElementById('channel-list');
+        const searchInput = document.getElementById('search-channel');
+        const btnClearSearch = document.getElementById('btn-clear-search');
+        const playerPlaceholder = document.getElementById('player-placeholder');
+        const btnBackHome = document.getElementById('btn-back-home');
+        let hls = null;
+
+        // Cargar la lista principal al iniciar la página
+        window.addEventListener('DOMContentLoaded', () => {
+            loadRemotePlaylist(MAIN_PLAYLIST_URL, false);
+        });
+
+        function loadMainPlaylist() {
+            isSubList = false;
+            btnBackHome.classList.add('hidden');
+            loadRemotePlaylist(MAIN_PLAYLIST_URL, false);
+        }
+
+        // Descargar listas mediante fetch
+        function loadRemotePlaylist(url, sub = false) {
+            channelListEl.innerHTML = '<div class="p-6 text-center text-blue-400 text-sm animate-pulse">Cargando elementos...</div>';
+            
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) throw new Error('No se pudo conectar con el servidor.');
+                    return response.text();
+                })
+                .then(data => {
+                    parseM3U(data, sub);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    channelListEl.innerHTML = `
+                        <div class="p-6 text-center text-red-400 text-sm">
+                            <b>Error al cargar la lista.</b><br>
+                            <span class="text-xs text-gray-400 mt-2 block">Verifica tu conexión a internet.</span>
+                        </div>`;
+                });
+        }
+
+        // Carga local por archivo
+        document.getElementById('m3u-file').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                parseM3U(e.target.result, true);
+            };
+            reader.readAsText(file);
+        });
+
+        // Parser M3U
+        function parseM3U(data, sub) {
+            items = [];
+            const lines = data.split('\n');
+            let currentItem = {};
+
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i].trim();
+                
+                if (line.startsWith('#EXTINF:')) {
+                    const commaIndex = line.lastIndexOf(',');
+                    currentItem.name = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : 'Sin nombre';
+                    
+                    const logoMatch = line.match(/tvg-logo="([^"]*)"/);
+                    currentItem.logo = logoMatch ? logoMatch[1] : null;
+                } else if (line && !line.startsWith('#')) {
+                    currentItem.url = line;
+                    if (currentItem.name && currentItem.url) {
+                        items.push({ ...currentItem });
+                    }
+                    currentItem = {};
+                }
+            }
+
+            isSubList = sub;
+            if (sub) {
+                btnBackHome.classList.remove('hidden');
+                searchInput.value = '';
+            } else {
+                btnBackHome.classList.add('hidden');
+                searchInput.value = DEFAULT_FILTER;
+            }
+            filterAndRender();
+        }
+
+        // Filtrar y actualizar elementos
+        function filterAndRender() {
+            const query = searchInput.value.toLowerCase();
+            filteredItems = items.filter(i => i.name.toLowerCase().includes(query));
+            currentIndex = 0;
+            renderItems();
+        }
+
+        // Renderizar lista en pantalla
+        function renderItems() {
+            channelListEl.innerHTML = '';
+            if (filteredItems.length === 0) {
+                channelListEl.innerHTML = '<div class="p-4 text-center text-gray-400 text-sm">No se encontraron elementos</div>';
+                return;
+            }
+
+            filteredItems.forEach((item, index) => {
+                const el = document.createElement('div');
+                el.className = 'channel-item p-3 cursor-pointer flex items-center space-x-3 transition border-l-4 border-transparent';
+                
+                if (index === currentIndex) {
+                    el.classList.add('bg-gray-700', 'border-blue-500');
+                } else {
+                    el.classList.add('hover:bg-gray-700/50');
+                }
+                
+                let logoHtml = item.logo 
+                    ? `<img src="${item.logo}" class="w-8 h-8 object-contain bg-gray-900 rounded flex-shrink-0" onerror="this.style.display='none'">` 
+                    : '<div class="w-8 h-8 bg-gray-700 rounded flex items-center justify-center text-xs flex-shrink-0">📁</div>';
+                
+                el.innerHTML = `
+                    ${logoHtml}
+                    <div class="flex-1 truncate text-sm font-medium text-gray-200">${item.name}</div>
+                `;
+
+                el.addEventListener('click', () => {
+                    currentIndex = index;
+                    updateSelectionVisual();
+                    executeSelection(item);
+                });
+
+                channelListEl.appendChild(el);
+            });
+            
+            scrollToSelected();
+        }
+
+        // Actualizar efectos visuales
+        function updateSelectionVisual() {
+            const children = channelListEl.children;
+            for (let i = 0; i < children.length; i++) {
+                if (i === currentIndex) {
+                    children[i].className = 'channel-item p-3 cursor-pointer flex items-center space-x-3 transition border-l-4 border-blue-500 bg-gray-700';
+                } else {
+                    children[i].className = 'channel-item p-3 cursor-pointer flex items-center space-x-3 transition border-l-4 border-transparent hover:bg-gray-700/50';
+                }
+            }
+            scrollToSelected();
+        }
+
+        // Mantener elemento visible en scroll
+        function scrollToSelected() {
+            const selectedEl = channelListEl.children[currentIndex];
+            if (selectedEl) {
+                selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+        }
+
+        // Ejecutar selección (Si ya está reproduciéndose, activa pantalla completa)
+        function executeSelection(item) {
+            if (item.url.endsWith('.m3u') || item.url.includes('.m3u?')) {
+                loadRemotePlaylist(item.url, true);
+            } else {
+                if (item.url === currentPlayingUrl) {
+                    toggleFullScreen();
+                } else {
+                    playStream(item);
+                }
+            }
+        }
+
+        // Reproducir stream de video
+        function playStream(item) {
+            currentPlayingUrl = item.url;
+            playerPlaceholder.style.display = 'none';
+            
+            if (Hls.isSupported()) {
+                if (hls) hls.destroy();
+                hls = new Hls();
+                hls.loadSource(item.url);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    video.play().catch(e => console.log("Error al reproducir:", e));
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = item.url;
+                video.addEventListener('loadedmetadata', function() {
+                    video.play();
+                });
+            } else {
+                alert('Tu navegador no soporta reproducción HLS.');
+            }
+        }
+
+        // Alternar pantalla completa
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                if (video.requestFullscreen) {
+                    video.requestFullscreen();
+                } else if (video.webkitRequestFullscreen) {
+                    video.webkitRequestFullscreen();
+                } else if (video.msRequestFullscreen) {
+                    video.msRequestFullscreen();
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    document.msExitFullscreen();
+                }
+            }
+        }
+
+        // --- CONTROL REMOTO / TECLADO GLOBAL ---
+        document.addEventListener('keydown', function(e) {
+            if (document.activeElement === searchInput) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    searchInput.blur();
+                }
+                return;
+            }
+
+            if (filteredItems.length === 0) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                currentIndex = (currentIndex + 1) % filteredItems.length;
+                updateSelectionVisual();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                currentIndex = (currentIndex - 1 + filteredItems.length) % filteredItems.length;
+                updateSelectionVisual();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const selectedItem = filteredItems[currentIndex];
+                if (selectedItem) {
+                    executeSelection(selectedItem);
+                }
+            }
+        });
+
+        // Eventos del Buscador
+        searchInput.addEventListener('input', filterAndRender);
+
+        btnClearSearch.addEventListener('click', () => {
+            searchInput.value = '';
+            filterAndRender();
+            searchInput.focus();
+        });
+    </script>
+</body>
+</html>
